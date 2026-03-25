@@ -9,7 +9,7 @@ const wss = new WebSocketServer({ server });
 
 app.use(express.static(path.join(__dirname, 'public')));
 
-// rooms: { roomId: { peerId: ws } }
+// rooms: { roomId: { peerId: { ws, name } } }
 const rooms = new Map();
 
 function getRoomPeers(roomId) {
@@ -19,18 +19,18 @@ function getRoomPeers(roomId) {
 
 function broadcastToRoom(roomId, senderId, message) {
   const peers = getRoomPeers(roomId);
-  peers.forEach((ws, peerId) => {
-    if (peerId !== senderId && ws.readyState === ws.OPEN) {
-      ws.send(JSON.stringify(message));
+  peers.forEach((peer, peerId) => {
+    if (peerId !== senderId && peer.ws.readyState === peer.ws.OPEN) {
+      peer.ws.send(JSON.stringify(message));
     }
   });
 }
 
 function sendToPeer(roomId, targetId, message) {
   const peers = getRoomPeers(roomId);
-  const ws = peers.get(targetId);
-  if (ws && ws.readyState === ws.OPEN) {
-    ws.send(JSON.stringify(message));
+  const peer = peers.get(targetId);
+  if (peer && peer.ws.readyState === peer.ws.OPEN) {
+    peer.ws.send(JSON.stringify(message));
   }
 }
 
@@ -44,25 +44,40 @@ wss.on('connection', (ws) => {
 
     switch (msg.type) {
       case 'join': {
-        const { roomId, peerId } = msg;
+        const { roomId, peerId, name } = msg;
         currentRoom = roomId;
         currentPeerId = peerId;
 
         const peers = getRoomPeers(roomId);
-        // Send existing peer list to newcomer
-        const existingPeers = [...peers.keys()];
+
+        // Send existing peers (with names) to newcomer
+        const existingPeers = [...peers.entries()].map(([id, p]) => ({
+          peerId: id,
+          name: p.name || id.slice(0, 6)
+        }));
         ws.send(JSON.stringify({ type: 'peers', peers: existingPeers }));
-        // Notify existing peers
-        broadcastToRoom(roomId, peerId, { type: 'peer-joined', peerId });
+
+        // Notify existing peers about the newcomer (with name)
+        broadcastToRoom(roomId, peerId, { type: 'peer-joined', peerId, name: name || peerId.slice(0, 6) });
+
         // Add to room
-        peers.set(peerId, ws);
-        console.log(`[${roomId}] ${peerId} joined. Total: ${peers.size}`);
+        peers.set(peerId, { ws, name: name || peerId.slice(0, 6) });
+        console.log(`[${roomId}] ${name || peerId} joined. Total: ${peers.size}`);
         break;
       }
       case 'offer':
       case 'answer':
       case 'ice-candidate': {
         sendToPeer(currentRoom, msg.targetId, { ...msg, fromId: currentPeerId });
+        break;
+      }
+      case 'mute-state': {
+        // Broadcast mute state to all peers
+        broadcastToRoom(currentRoom, currentPeerId, {
+          type: 'peer-mute-state',
+          peerId: currentPeerId,
+          muted: msg.muted
+        });
         break;
       }
     }
